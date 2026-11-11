@@ -90,7 +90,8 @@ panel recomputes it every two seconds while a turn runs.
 ## Development
 
 ```sh
-pnpm check   # typecheck, unit tests, GUI bundle
+pnpm check   # typecheck, Oxlint, unit tests, GUI bundle
+pnpm lint    # Oxlint, warnings treated as failures
 ```
 
 The GUI part is experimental and targets OpenCode `>=2.2.6 <3`.

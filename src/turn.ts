@@ -80,7 +80,6 @@ type TurnSlice = {
 }
 
 type AssistantMessage = Extract<SessionMessageInfo, { type: "assistant" }>
-type ToolPart = Extract<AssistantMessage["content"][number], { type: "tool" }>
 
 const MIN_MODEL_MS = 250
 const MIN_CHARS_PER_TOKEN = 1.5

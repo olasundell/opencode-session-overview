@@ -383,8 +383,8 @@ function Overview(props: PanelProps) {
   }
 
   createEffect(() => {
-    props.session.location
-    props.session.server.data
+    void props.session.location
+    void props.session.server.data
     syncSources()
   })
 
