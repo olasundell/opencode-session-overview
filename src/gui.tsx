@@ -720,7 +720,7 @@ function Overview(props: PanelProps) {
                     {formatShortDuration(summary().waitMs)} wait
                   </span>
                 </button>
-                <TimingBreakdown session={snapshot} />
+                <TimingBreakdown session={snapshot} waiting={waitingOnYou} />
                 <div
                   class="text-[11px]"
                   style={{ color: "var(--v2-text-text-faint)" }}
@@ -870,12 +870,17 @@ function Section(props: {
   )
 }
 
-function TimingBreakdown(props: { readonly session: () => SessionSummary }) {
+function TimingBreakdown(props: {
+  readonly session: () => SessionSummary
+  readonly waiting: () => boolean
+}) {
   const current = () => {
     const session = props.session()
     return session.turns[session.turns.length - 1] ?? session.summary
   }
   const total = () => props.session().summary
+  const tone = (): "success" | "warning" =>
+    current().running && !props.waiting() ? "success" : "warning"
 
   return (
     <div
@@ -889,10 +894,26 @@ function TimingBreakdown(props: { readonly session: () => SessionSummary }) {
       }}
       title="Current run above cumulative"
     >
-      <TimingCell label="Model" value={formatDuration(current().modelMs)} />
-      <TimingCell label="Shell" value={formatDuration(current().shellMs)} />
-      <TimingCell label="Tools" value={formatDuration(current().pluginMs)} />
-      <TimingCell label="Other" value={formatDuration(current().otherMs)} />
+      <TimingCell
+        label="Model"
+        value={formatDuration(current().modelMs)}
+        tone={tone()}
+      />
+      <TimingCell
+        label="Shell"
+        value={formatDuration(current().shellMs)}
+        tone={tone()}
+      />
+      <TimingCell
+        label="Tools"
+        value={formatDuration(current().pluginMs)}
+        tone={tone()}
+      />
+      <TimingCell
+        label="Other"
+        value={formatDuration(current().otherMs)}
+        tone={tone()}
+      />
 
       <TimingCell label="Model" value={formatDuration(total().modelMs)} dim />
       <TimingCell label="Shell" value={formatDuration(total().shellMs)} dim />
@@ -967,7 +988,15 @@ function TimingCell(props: {
   readonly label: string
   readonly value: string
   readonly dim?: boolean
+  readonly tone?: "success" | "warning"
 }) {
+  const color = () =>
+    props.tone === "success"
+      ? "var(--v2-state-fg-success)"
+      : props.tone === "warning"
+        ? "var(--v2-state-fg-warning)"
+        : undefined
+
   return (
     <span
       style={{
@@ -975,8 +1004,12 @@ function TimingCell(props: {
         opacity: props.dim ? 0.65 : 1,
       }}
     >
-      <span style={{ color: "var(--v2-text-text-faint)" }}>{props.label}</span>{" "}
-      <span style={{ color: "var(--v2-text-text-muted)" }}>{props.value}</span>
+      <span style={{ color: color() ?? "var(--v2-text-text-faint)" }}>
+        {props.label}
+      </span>{" "}
+      <span style={{ color: color() ?? "var(--v2-text-text-muted)" }}>
+        {props.value}
+      </span>
     </span>
   )
 }

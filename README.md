@@ -8,8 +8,9 @@ instead of a composer pill.
 - **Project** — project name, current branch, directory
 - **Timing** — cumulative session throughput and wait time, with a tightly
   spaced current/last-run breakdown above the cumulative breakdown (model,
-  shell, tools and other); **Details** opens the full list, including waiting
-  on you and provider retry, plus a **Show all turns** switch
+  shell, tools and other). The current/last-run row is green while running and
+  orange while waiting for input; **Details** opens the full list, including
+  waiting on you and provider retry, plus a **Show all turns** switch
 - **Changes** — working-tree additions/deletions from `vcs.status`; click for
   the per-file list
 - **Subagents** — child sessions with colored initials, running/done counts,
