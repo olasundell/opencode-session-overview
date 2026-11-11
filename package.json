@@ -4,6 +4,7 @@
   "private": true,
   "description": "Codex-style session overview side panel for OpenCode Desktop.",
   "type": "module",
+  "packageManager": "pnpm@12.18.0",
   "exports": {
     ".": "./src/server.ts",
     "./server": "./src/server.ts",
@@ -18,7 +19,7 @@
     "typecheck": "tsc --noEmit",
     "build": "vite build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
-    "check": "npm run typecheck && npm run test && npm run build"
+    "check": "pnpm run typecheck && pnpm run test && pnpm run build"
   },
   "engines": {
     "opencode": ">=2.2.6 <3"

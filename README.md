@@ -38,8 +38,8 @@ Add the package to the global desktop plugin config, then build it:
 
 ```sh
 cd /Users/olasundell/code/own/opencode-session-overview
-npm install
-npm run build
+pnpm install
+pnpm build
 ```
 
 OpenCode Desktop reads `opencode.json(c)`; TUI-only entries in `cli.json` do
@@ -80,7 +80,7 @@ intervals, and wait time is turn wall clock minus model request time.
 ## Development
 
 ```sh
-npm run check   # typecheck, unit tests, GUI bundle
+pnpm check   # typecheck, unit tests, GUI bundle
 ```
 
 The GUI part is experimental and targets OpenCode `>=2.2.6 <3`.
