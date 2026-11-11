@@ -236,7 +236,7 @@ function useTurnTiming(session: MountedSession) {
 
       return registry.snapshot(
         session.id,
-        store.session.message.list(session.id),
+        store.session.message.list(session.id) ?? [],
         Date.now(),
         running,
       )
@@ -308,7 +308,7 @@ function Overview(props: PanelProps) {
 
     return untrack(() => {
       const store = data()
-      if (store.session.permission.list(props.session.id).length > 0) return true
+      if ((store.session.permission.list(props.session.id) ?? []).length > 0) return true
 
       return (
         (store.session.form.list(props.session.id, props.session.location) ?? []).length >
@@ -327,7 +327,7 @@ function Overview(props: PanelProps) {
 
     return untrack(() => {
       const store = data()
-      const messages = store.session.message.list(props.session.id)
+      const messages = store.session.message.list(props.session.id) ?? []
       const info = store.session.get(props.session.id)
       const ref =
         info?.model ??
@@ -430,7 +430,7 @@ function Overview(props: PanelProps) {
   })
 
   const subagents = createMemo(() => {
-    const sessions = data().session.list()
+    const sessions = data().session.list() ?? []
     const ids = descendantIDs(sessions, props.session.id)
 
     return sessions
@@ -485,7 +485,7 @@ function Overview(props: PanelProps) {
     }
 
     for (const integration of store.location.integration.list(location) ?? []) {
-      if (integration.connections.length === 0) continue
+      if ((integration.connections ?? []).length === 0) continue
 
       result.push({
         id: `integration:${integration.id}`,
