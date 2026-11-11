@@ -94,4 +94,6 @@ pnpm check   # typecheck, Oxlint, unit tests, GUI bundle
 pnpm lint    # Oxlint, warnings treated as failures
 ```
 
+GitHub Actions runs the same gate on every push and pull request.
+
 The GUI part is experimental and targets OpenCode `>=2.2.6 <3`.
