@@ -1,0 +1,38 @@
+{
+  "name": "opencode-session-overview",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Codex-style session overview side panel for OpenCode Desktop.",
+  "type": "module",
+  "exports": {
+    ".": "./src/server.ts",
+    "./server": "./src/server.ts",
+    "./gui-experimental": "./dist/gui-experimental.cjs"
+  },
+  "files": [
+    "src",
+    "dist",
+    "README.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "vite build",
+    "test": "node --experimental-strip-types --test test/*.test.ts",
+    "check": "npm run typecheck && npm run test && npm run build"
+  },
+  "engines": {
+    "opencode": ">=2.2.6 <3"
+  },
+  "peerDependencies": {
+    "@opencode/plugin": "^2.2.6",
+    "solid-js": ">=1.9.0"
+  },
+  "devDependencies": {
+    "@opencode/client": "2.2.7",
+    "@opencode/plugin": "2.2.7",
+    "solid-js": "1.9.17",
+    "typescript": "5.9.3",
+    "vite": "7.3.7",
+    "vite-plugin-solid": "2.11.10"
+  }
+}

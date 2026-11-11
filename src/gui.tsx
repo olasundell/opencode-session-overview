@@ -1,0 +1,893 @@
+/** @jsxImportSource solid-js */
+import {
+  Command,
+  MenuItem,
+  Panel,
+  Plugin,
+  Slot,
+  usePlugin,
+  type IconName,
+  type MenuItem as MenuItemInfo,
+  type MountedSession,
+  type PanelProps,
+  type PanelTab,
+  type UiMenuEntry,
+} from "@opencode/plugin/gui"
+import type { SessionInfo, VcsFileStatus } from "@opencode/client"
+import {
+  For,
+  Show,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  onCleanup,
+} from "solid-js"
+import type { JSX } from "solid-js"
+import {
+  avatarColor,
+  basename,
+  descendantIDs,
+  initials,
+  sumChanges,
+} from "./overview.js"
+import {
+  formatDuration,
+  formatRate,
+  formatShortDuration,
+  formatTokens,
+  type TurnSummary,
+} from "./turn.js"
+import { createTimingTracker, type TimingSubscribe } from "./timing.js"
+
+type SourceTone = "success" | "warning" | "danger"
+
+type Source = {
+  readonly id: string
+  readonly name: string
+  readonly icon: IconName
+  readonly detail?: string
+  readonly tone?: SourceTone
+}
+
+type TimingRow = {
+  readonly id: string
+  readonly label: string
+  readonly detail: string
+  readonly tone?: "warning"
+}
+
+// Auto-open once per session in this window. Closing the panel afterwards is
+// respected until the window or plugin reloads.
+const autoOpened = new Set<string>()
+
+export default Plugin.define({
+  i18n: {
+    en: {
+      "panel.title": "Overview",
+      "command.overview": "Show session overview",
+      "menu.actions": "Overview actions",
+    },
+  },
+  setup(ctx) {
+    const options = {
+      autoOpen: ctx.options.autoOpen !== false,
+    }
+
+    const tab: PanelTab = {
+      id: "overview",
+      get title() {
+        return ctx.t("panel.title")
+      },
+      closable: "compact",
+      fallback: true,
+    }
+
+    ctx.add(Panel, {
+      id: "overview",
+      region: "side",
+      width: 320,
+      mobile: {
+        get title() {
+          return ctx.t("panel.title")
+        },
+        order: 40,
+        kind: "menu",
+        icon: "window-analytics",
+      },
+      list: (input) => (input.open.includes("overview") ? [tab] : []),
+      render: (props) => <Overview {...props} />,
+    })
+
+    ctx.add(Slot, {
+      at: "session.header",
+      render: (input) => (
+        <AutoOpen
+          session={input.session}
+          active={input.active}
+          enabled={options.autoOpen}
+        />
+      ),
+    })
+
+    ctx.add(MenuItem, (): MenuItemInfo => {
+      const session = ctx.sessions.current()
+
+      return {
+        menu: "session.panel",
+        id: "overview",
+        title: ctx.t("panel.title"),
+        icon: "window-analytics",
+        opened: !!session && ctx.layout.state(`${ctx.id}:overview`, session) !== "closed",
+        run: () => {
+          const current = ctx.sessions.current()
+          if (current) ctx.layout.open(`${ctx.id}:overview`, current, { tab: "select" })
+        },
+      }
+    })
+
+    ctx.add(Command, () => ({
+      id: "overview",
+      title: ctx.t("command.overview"),
+      slash: { name: "overview" },
+      enabled: !!ctx.sessions.current(),
+      run: () => {
+        const session = ctx.sessions.current()
+        if (!session) return
+        ctx.layout.open(`${ctx.id}:overview`, session, { tab: "select" })
+      },
+    }))
+  },
+})
+
+function AutoOpen(props: {
+  readonly session: MountedSession
+  readonly active: boolean
+  readonly enabled: boolean
+}) {
+  const ctx = usePlugin()
+
+  createEffect(() => {
+    if (!props.enabled || !props.active) return
+
+    const session = props.session
+    if (!session || session.pending) return
+
+    const store = session.server.data
+    try {
+      if (store.session.root(session.id) !== session.id) return
+    } catch {
+      return
+    }
+
+    // On a narrow window the host gives the side region the whole screen.
+    if (ctx.layout.narrow()) return
+    if (autoOpened.has(session.key)) return
+
+    autoOpened.add(session.key)
+
+    try {
+      // `background` opens the side region for an action the user did not
+      // start from the panel, without replacing a narrow-screen view.
+      ctx.layout.open(`${ctx.id}:overview`, session, {
+        tab: "select",
+        background: true,
+      })
+    } catch {
+      autoOpened.delete(session.key)
+    }
+  })
+
+  return null
+}
+
+/**
+ * Track the current or last turn for this panel's session. Persisted messages
+ * supply steps, tokens and tool times; live events supply streaming deltas,
+ * permission/form waits and retry waits.
+ */
+function useTurnTiming(session: MountedSession) {
+  const [now, setNow] = createSignal(Date.now())
+  const [revision, setRevision] = createSignal(0)
+
+  let tracker: ReturnType<typeof createTimingTracker> | undefined
+
+  createEffect(() => {
+    const store = session.server.data
+    const sessionID = session.id
+
+    tracker = createTimingTracker({
+      sessionID,
+      onChange: () => setRevision((value) => value + 1),
+    })
+
+    const off = tracker.attach(store.on as unknown as TimingSubscribe)
+    const timer = setInterval(() => setNow(Date.now()), 500)
+
+    // Trigger the summary once the tracker exists, not only on the next tick.
+    setRevision((value) => value + 1)
+
+    onCleanup(() => {
+      off()
+      clearInterval(timer)
+      tracker = undefined
+    })
+  })
+
+  return createMemo(() => {
+    revision()
+    const at = now()
+    const store = session.server.data
+    const running = store.session.status(session.id) === "running"
+
+    return tracker?.summary(store.session.message.list(session.id), at, running)
+  })
+}
+
+function timingRows(summary: TurnSummary): TimingRow[] {
+  const rows: TimingRow[] = [
+    { id: "rate", label: "Throughput", detail: formatRate(summary.rate) },
+    { id: "tokens", label: "Tokens", detail: formatTokens(summary.tokens) },
+    { id: "model", label: "Model request", detail: formatDuration(summary.modelMs) },
+    {
+      id: "tools",
+      label: `Tools (${summary.toolCount})`,
+      detail: formatDuration(summary.toolMs),
+    },
+  ]
+
+  for (const tool of summary.tools.slice(0, 2)) {
+    rows.push({
+      id: `tool:${tool.name}`,
+      label: tool.name,
+      detail: `${formatDuration(tool.ms)} · ${tool.count}×`,
+    })
+  }
+
+  if (summary.humanMs > 0) {
+    rows.push({
+      id: "human",
+      label: `Waiting on you (${summary.humanCount})`,
+      detail: formatDuration(summary.humanMs),
+      tone: "warning",
+    })
+  }
+
+  if (summary.retryMs > 0) {
+    rows.push({
+      id: "retry",
+      label: "Provider retry",
+      detail: formatDuration(summary.retryMs),
+      tone: "warning",
+    })
+  }
+
+  if (summary.otherMs > 500) {
+    rows.push({ id: "other", label: "Other", detail: formatDuration(summary.otherMs) })
+  }
+
+  rows.push({ id: "wait", label: "Total wait", detail: formatDuration(summary.waitMs) })
+  rows.push({ id: "turn", label: "Turn total", detail: formatDuration(summary.totalMs) })
+
+  return rows
+}
+
+function Overview(props: PanelProps) {
+  const ctx = usePlugin()
+  const data = () => props.session.server.data
+  const directory = () => props.session.directory
+  const timing = useTurnTiming(props.session)
+
+  const waitingOnYou = createMemo(() => {
+    const summary = timing()
+    if (summary && summary.pendingHumanMs > 0) return true
+
+    const store = data()
+    if (store.session.permission.list(props.session.id).length > 0) return true
+
+    return (
+      (store.session.form.list(props.session.id, props.session.location) ?? []).length > 0
+    )
+  })
+
+  const projectName = createMemo(
+    () =>
+      props.session.listedProject?.name ??
+      props.session.project?.name ??
+      basename(directory()),
+  )
+
+  const branch = createMemo(() => {
+    const location = props.session.location
+    if (!location) return undefined
+    return data().location.vcs.info(location)?.branch.current
+  })
+
+  const [changes, { refetch }] = createResource(
+    () =>
+      [
+        props.session.server.id,
+        directory(),
+        props.session.server.connected,
+      ] as const,
+    async ([, dir]) => {
+      try {
+        const result = await props.session.server.client.vcs.status({
+          location: { directory: dir },
+        })
+        return result.data
+      } catch {
+        return [] as VcsFileStatus[]
+      }
+    },
+  )
+
+  const files = createMemo(() => changes() ?? [])
+  const totals = createMemo(() => sumChanges(files()))
+
+  const syncSources = () => {
+    const location = props.session.location
+    if (!location) return
+
+    const store = data()
+    void Promise.allSettled([
+      store.location.mcp.server.sync(location),
+      store.location.websearch.refresh(location),
+      store.location.reference.sync(location),
+      store.location.integration.sync(location),
+    ])
+  }
+
+  createEffect(() => {
+    props.session.location
+    props.session.server.data
+    syncSources()
+  })
+
+  createEffect(() => {
+    const store = data()
+    const sessionID = props.session.id
+    let timer: ReturnType<typeof setTimeout> | undefined
+
+    const schedule = () => {
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        void refetch()
+      }, 250)
+    }
+
+    const offFiles = store.on("filesystem.changed", schedule)
+    const offExec = store.on("session.execution.succeeded", (event) => {
+      if (event.data.sessionID === sessionID) schedule()
+    })
+
+    onCleanup(() => {
+      if (timer) clearTimeout(timer)
+      offFiles()
+      offExec()
+    })
+  })
+
+  const subagents = createMemo(() => {
+    const sessions = data().session.list()
+    const ids = descendantIDs(sessions, props.session.id)
+
+    return sessions
+      .filter((session) => session.id !== props.session.id && ids.has(session.id))
+      .sort((left, right) => right.time.created - left.time.created)
+  })
+
+  const done = createMemo(
+    () => subagents().filter((session) => session.outcome !== undefined).length,
+  )
+
+  const running = createMemo(
+    () =>
+      subagents().filter((session) => data().session.status(session.id) === "running")
+        .length,
+  )
+
+  const subagentSummary = createMemo(() => {
+    if (subagents().length === 0) return "None"
+    const parts = [`${done()} done`]
+    if (running() > 0) parts.unshift(`${running()} running`)
+    return parts.join(" · ")
+  })
+
+  const sources = createMemo<Source[]>(() => {
+    const location = props.session.location
+    if (!location) return []
+
+    const store = data()
+    const result: Source[] = []
+
+    for (const server of store.location.mcp.server.list(location) ?? []) {
+      if (server.status.status === "disabled") continue
+
+      result.push({
+        id: `mcp:${server.name}`,
+        name: server.title ?? server.name,
+        icon: "mcp",
+        detail: mcpStatus(server.status.status),
+        tone: mcpTone(server.status.status),
+      })
+    }
+
+    const websearch = store.location.websearch.list(location) ?? []
+    if (websearch.length > 0) {
+      result.push({
+        id: "websearch",
+        name: "Web search",
+        icon: "globe",
+        detail: websearch.length === 1 ? websearch[0]?.name : `${websearch.length}`,
+      })
+    }
+
+    for (const integration of store.location.integration.list(location) ?? []) {
+      if (integration.connections.length === 0) continue
+
+      result.push({
+        id: `integration:${integration.id}`,
+        name: integration.name,
+        icon: "extensions",
+        detail: "Connected",
+        tone: "success",
+      })
+    }
+
+    const references = (store.location.reference.list(location) ?? []).filter(
+      (reference) => !reference.hidden,
+    )
+    if (references.length > 0) {
+      result.push({
+        id: "references",
+        name: "References",
+        icon: "link",
+        detail: `${references.length}`,
+      })
+    }
+
+    return result
+  })
+
+  const openSubagent = (session: SessionInfo) => {
+    ctx.tabs.open({ server: props.session.server.id, id: session.id }, { focus: true })
+  }
+
+  const statusLabel = (session: SessionInfo) => {
+    if (data().session.status(session.id) === "running") return "running"
+    return session.outcome ?? "idle"
+  }
+
+  const openChanges = () => {
+    const list = files()
+
+    ctx.dialogs.open((dialog) => (
+      <ctx.ui.Dialog
+        title="Changes"
+        description={
+          list.length === 0 ? "No working-tree changes." : `${list.length} changed files`
+        }
+        size="normal"
+        footer={
+          <ctx.ui.Button variant="contrast" onClick={dialog.close}>
+            Close
+          </ctx.ui.Button>
+        }
+      >
+        <div class="flex flex-col gap-1">
+          <For each={list}>
+            {(file) => (
+              <div class="flex items-center gap-2 py-1">
+                <span class="flex-1 truncate" title={file.file}>
+                  {file.file}
+                </span>
+                <span style={{ color: "var(--v2-state-fg-success)" }}>
+                  +{file.additions}
+                </span>
+                <span style={{ color: "var(--v2-state-fg-danger)" }}>
+                  -{file.deletions}
+                </span>
+              </div>
+            )}
+          </For>
+        </div>
+      </ctx.ui.Dialog>
+    ))
+  }
+
+  const openSubagents = () => {
+    const list = subagents()
+
+    ctx.dialogs.open((dialog) => (
+      <ctx.ui.Dialog
+        title="Subagents"
+        description={`${list.length} sessions`}
+        size="normal"
+        footer={
+          <ctx.ui.Button variant="contrast" onClick={dialog.close}>
+            Close
+          </ctx.ui.Button>
+        }
+      >
+        <div class="flex flex-col gap-1">
+          <For each={list}>
+            {(session) => (
+              <button
+                type="button"
+                class="flex items-center gap-2 py-1 text-left"
+                onClick={() => {
+                  openSubagent(session)
+                  dialog.close()
+                }}
+              >
+                <Avatar session={session} />
+                <span class="flex-1 truncate">
+                  {session.title ?? session.agent ?? session.id}
+                </span>
+                <span
+                  class="text-[11px]"
+                  style={{ color: "var(--v2-text-text-faint)" }}
+                >
+                  {statusLabel(session)}
+                </span>
+              </button>
+            )}
+          </For>
+        </div>
+      </ctx.ui.Dialog>
+    ))
+  }
+
+  const openSources = () => {
+    const list = sources()
+
+    ctx.dialogs.open((dialog) => (
+      <ctx.ui.Dialog
+        title="Sources"
+        description={
+          list.length === 0 ? "No sources configured." : `${list.length} configured`
+        }
+        size="normal"
+        footer={
+          <ctx.ui.Button variant="contrast" onClick={dialog.close}>
+            Close
+          </ctx.ui.Button>
+        }
+      >
+        <div class="flex flex-col gap-1">
+          <For each={list}>{(source) => <SourceRow source={source} />}</For>
+        </div>
+      </ctx.ui.Dialog>
+    ))
+  }
+
+  const openTiming = () => {
+    const summary = timing()
+    if (!summary) return
+
+    const rows = timingRows(summary)
+
+    ctx.dialogs.open((dialog) => (
+      <ctx.ui.Dialog
+        title="Timing"
+        description={summary.running ? "Current turn" : "Last turn"}
+        size="normal"
+        footer={
+          <ctx.ui.Button variant="contrast" onClick={dialog.close}>
+            Close
+          </ctx.ui.Button>
+        }
+      >
+        <div class="flex flex-col gap-1">
+          <For each={rows}>
+            {(row) => (
+              <div class="flex items-center gap-2 py-1">
+                <span class="flex-1">{row.label}</span>
+                <span
+                  style={{
+                    color:
+                      row.tone === "warning"
+                        ? "var(--v2-state-fg-warning)"
+                        : undefined,
+                  }}
+                >
+                  {row.detail}
+                </span>
+              </div>
+            )}
+          </For>
+        </div>
+      </ctx.ui.Dialog>
+    ))
+  }
+
+  const menuItems: UiMenuEntry[] = [
+    {
+      label: "Refresh",
+      icon: "refresh",
+      onSelect: () => {
+        void refetch()
+        syncSources()
+      },
+    },
+    {
+      label: "Settings",
+      icon: "settings-gear",
+      onSelect: () => ctx.layout.settings(),
+    },
+    { type: "separator" },
+    {
+      label: "Close panel",
+      icon: "close",
+      onSelect: () => ctx.layout.close(`${ctx.id}:overview`, props.session),
+    },
+  ]
+
+  return (
+    <div class="flex h-full flex-col gap-4 overflow-y-auto p-3 text-[13px]">
+      <header class="flex items-start justify-between gap-2">
+        <div class="min-w-0">
+          <div class="truncate text-[14px] font-[530]">{projectName()}</div>
+          <div
+            class="truncate text-[11px]"
+            style={{ color: "var(--v2-text-text-faint)" }}
+          >
+            {[branch(), basename(directory())].filter(Boolean).join(" · ")}
+          </div>
+        </div>
+        <ctx.ui.Menu label={ctx.t("menu.actions")} items={menuItems} />
+      </header>
+
+      <Section
+        title="Timing"
+        action={
+          <Show when={timing()}>
+            <button
+              type="button"
+              class="text-[11px]"
+              style={{ color: "var(--v2-text-text-accent)" }}
+              onClick={openTiming}
+            >
+              Breakdown
+            </button>
+          </Show>
+        }
+      >
+        <Show
+          when={timing()}
+          fallback={
+            <span class="text-[12px]" style={{ color: "var(--v2-text-text-faint)" }}>
+              No turn yet
+            </span>
+          }
+        >
+          {(summary) => (
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 py-1 text-left"
+              onClick={openTiming}
+            >
+              <span style={{ color: "var(--v2-icon-icon-muted)" }}>
+                <ctx.ui.Icon name="waveform" size="small" />
+              </span>
+              <span class="flex-1">{formatRate(summary().rate)}</span>
+              <span
+                style={{
+                  color: waitingOnYou()
+                    ? "var(--v2-state-fg-warning)"
+                    : "var(--v2-text-text-faint)",
+                }}
+              >
+                {formatShortDuration(summary().waitMs)} wait
+              </span>
+            </button>
+          )}
+        </Show>
+        <Show when={timing()}>
+          {(summary) => (
+            <div
+              class="text-[11px]"
+              style={{ color: "var(--v2-text-text-faint)" }}
+            >
+              {summary().running ? "Running" : "Last turn"} ·{" "}
+              {formatTokens(summary().tokens)} tokens
+            </div>
+          )}
+        </Show>
+      </Section>
+
+      <Section title="Changes">
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 py-1 text-left"
+          onClick={openChanges}
+        >
+          <span style={{ color: "var(--v2-icon-icon-muted)" }}>
+            <ctx.ui.Icon name="branch" size="small" />
+          </span>
+          <span class="flex-1">Changes</span>
+          <Show when={!changes.loading} fallback={<ctx.ui.Loader size="small" />}>
+            <span style={{ color: "var(--v2-state-fg-success)" }}>
+              +{totals().additions}
+            </span>
+            <span style={{ color: "var(--v2-state-fg-danger)" }}>
+              -{totals().deletions}
+            </span>
+          </Show>
+        </button>
+        <div class="text-[11px]" style={{ color: "var(--v2-text-text-faint)" }}>
+          {totals().files === 0
+            ? "No working-tree changes"
+            : `${totals().files} changed file${totals().files === 1 ? "" : "s"}`}
+        </div>
+      </Section>
+
+      <Section
+        title="Subagents"
+        action={
+          <Show when={subagents().length > 0}>
+            <button
+              type="button"
+              class="text-[11px]"
+              style={{ color: "var(--v2-text-text-accent)" }}
+              onClick={openSubagents}
+            >
+              View all
+            </button>
+          </Show>
+        }
+      >
+        <div class="flex items-center gap-2">
+          <Show
+            when={subagents().length > 0}
+            fallback={
+              <span class="text-[12px]" style={{ color: "var(--v2-text-text-faint)" }}>
+                None
+              </span>
+            }
+          >
+            <div class="flex items-center gap-1">
+              <For each={subagents().slice(0, 5)}>
+                {(session) => (
+                  <button
+                    type="button"
+                    class="flex items-center"
+                    title={session.title ?? session.agent ?? session.id}
+                    onClick={() => openSubagent(session)}
+                  >
+                    <Avatar session={session} />
+                  </button>
+                )}
+              </For>
+            </div>
+            <span class="text-[12px]" style={{ color: "var(--v2-text-text-muted)" }}>
+              {subagentSummary()}
+            </span>
+          </Show>
+        </div>
+      </Section>
+
+      <Section
+        title="Sources"
+        action={
+          <ctx.ui.IconButton
+            icon="plus"
+            label="Add source"
+            size="small"
+            onClick={() => ctx.layout.settings()}
+          />
+        }
+      >
+        <Show
+          when={sources().length > 0}
+          fallback={
+            <span class="text-[12px]" style={{ color: "var(--v2-text-text-faint)" }}>
+              No sources configured
+            </span>
+          }
+        >
+          <div class="flex flex-col gap-0.5">
+            <For each={sources().slice(0, 3)}>
+              {(source) => <SourceRow source={source} />}
+            </For>
+          </div>
+          <Show when={sources().length > 0}>
+            <button
+              type="button"
+              class="flex items-center gap-2 py-1 text-left text-[12px]"
+              style={{ color: "var(--v2-text-text-accent)" }}
+              onClick={openSources}
+            >
+              <ctx.ui.Icon name="link" size="small" />
+              View all
+            </button>
+          </Show>
+        </Show>
+      </Section>
+    </div>
+  )
+}
+
+function Section(props: {
+  readonly title: string
+  readonly action?: JSX.Element
+  readonly children?: JSX.Element
+}) {
+  return (
+    <section
+      class="flex flex-col gap-1.5 border-t pt-3"
+      style={{ "border-color": "var(--v2-border-border-muted)" }}
+    >
+      <div class="flex items-center justify-between gap-2">
+        <span
+          class="text-[12px] font-[530]"
+          style={{ color: "var(--v2-text-text-muted)" }}
+        >
+          {props.title}
+        </span>
+        {props.action}
+      </div>
+      {props.children}
+    </section>
+  )
+}
+
+function SourceRow(props: { readonly source: Source }) {
+  const ctx = usePlugin()
+
+  return (
+    <div class="flex items-center gap-2 py-0.5">
+      <span style={{ color: sourceColor(props.source.tone) }}>
+        <ctx.ui.Icon name={props.source.icon} size="small" />
+      </span>
+      <span class="flex-1 truncate">{props.source.name}</span>
+      <Show when={props.source.detail}>
+        <span
+          class="text-[11px]"
+          style={{ color: "var(--v2-text-text-faint)" }}
+        >
+          {props.source.detail}
+        </span>
+      </Show>
+    </div>
+  )
+}
+
+function Avatar(props: { readonly session: SessionInfo }) {
+  return (
+    <span
+      class="flex items-center justify-center rounded-full text-[10px] font-[530]"
+      style={{
+        width: "20px",
+        height: "20px",
+        background: avatarColor(props.session.id),
+        color: "#fff",
+      }}
+    >
+      {initials(props.session.agent ?? props.session.title ?? props.session.id)}
+    </span>
+  )
+}
+
+function sourceColor(tone: SourceTone | undefined): string {
+  if (tone === "success") return "var(--v2-state-fg-success)"
+  if (tone === "warning") return "var(--v2-state-fg-warning)"
+  if (tone === "danger") return "var(--v2-state-fg-danger)"
+  return "var(--v2-icon-icon-muted)"
+}
+
+function mcpStatus(status: string): string {
+  if (status === "connected") return "Connected"
+  if (status === "pending") return "Starting"
+  if (status === "needs_auth") return "Needs auth"
+  if (status === "failed") return "Failed"
+  return status
+}
+
+function mcpTone(status: string): SourceTone | undefined {
+  if (status === "connected") return "success"
+  if (status === "pending") return "warning"
+  if (status === "needs_auth" || status === "failed") return "danger"
+  return undefined
+}
