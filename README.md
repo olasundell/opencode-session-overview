@@ -6,11 +6,13 @@ instead of a composer pill.
 ## What it shows
 
 - **Project** — project name, current branch, directory
+- **Actions** — the header menu copies the session ID or directory, opens a
+  terminal, and starts a new session
 - **Timing** — cumulative session throughput and wait time, with a tightly
   spaced current/last-run breakdown above the cumulative breakdown (model,
-  shell, tools and other). The current/last-run row is green while running and
-  orange while waiting for input; **Details** opens the full list, including
-  waiting on you and provider retry, plus a **Show all turns** switch
+  shell, tools and other). A status dot next to Timing is green while running
+  and orange while waiting for input; **Details** opens the full list,
+  including waiting on you and provider retry, plus a **Show all turns** switch
 - **Changes** — working-tree additions/deletions from `vcs.status`; click for
   the per-file list
 - **Subagents** — child sessions with colored initials, running/done counts,

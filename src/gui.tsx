@@ -299,6 +299,10 @@ function Overview(props: PanelProps) {
     })
   })
 
+  const timingTone = createMemo<"success" | "warning">(() =>
+    timing()?.summary.running && !waitingOnYou() ? "success" : "warning",
+  )
+
   const projectName = createMemo(
     () =>
       props.session.listedProject?.name ??
@@ -636,7 +640,53 @@ function Overview(props: PanelProps) {
     ))
   }
 
+  const openTerminal = () => {
+    const desktop = ctx.desktop
+    if (!desktop) return
+
+    const app =
+      desktop.os === "macos"
+        ? "Terminal"
+        : desktop.os === "windows"
+          ? "wt"
+          : "x-terminal-emulator"
+
+    void desktop.launch(directory(), app).catch(() => {})
+  }
+
   const menuItems: UiMenuEntry[] = [
+    {
+      label: "Copy session ID",
+      icon: "copy",
+      onSelect: () => {
+        void ctx.system.copy(props.session.id).catch(() => {})
+      },
+    },
+    {
+      label: "Copy directory",
+      icon: "folder",
+      onSelect: () => {
+        void ctx.system.copy(directory()).catch(() => {})
+      },
+    },
+    {
+      label: "Open terminal",
+      icon: "terminal",
+      disabled: !ctx.desktop,
+      onSelect: openTerminal,
+    },
+    {
+      label: "New session",
+      icon: "new-session",
+      onSelect: () => {
+        ctx.layout.draft({
+          server: props.session.server.id,
+          directory: directory(),
+          prompt: "",
+        })
+      },
+    },
+    { type: "separator" },
     {
       label: "Refresh",
       icon: "refresh",
@@ -675,6 +725,11 @@ function Overview(props: PanelProps) {
 
       <Section
         title="Timing"
+        indicator={
+          <Show when={timing()}>
+            <StatusDot tone={timingTone()} />
+          </Show>
+        }
         action={
           <Show when={timing()}>
             <button
@@ -720,7 +775,7 @@ function Overview(props: PanelProps) {
                     {formatShortDuration(summary().waitMs)} wait
                   </span>
                 </button>
-                <TimingBreakdown session={snapshot} waiting={waitingOnYou} />
+                <TimingBreakdown session={snapshot} />
                 <div
                   class="text-[11px]"
                   style={{ color: "var(--v2-text-text-faint)" }}
@@ -848,6 +903,7 @@ function Overview(props: PanelProps) {
 
 function Section(props: {
   readonly title: string
+  readonly indicator?: JSX.Element
   readonly action?: JSX.Element
   readonly children?: JSX.Element
 }) {
@@ -857,12 +913,15 @@ function Section(props: {
       style={{ "border-color": "var(--v2-border-border-muted)" }}
     >
       <div class="flex items-center justify-between gap-2">
-        <span
-          class="text-[12px] font-[530]"
-          style={{ color: "var(--v2-text-text-muted)" }}
-        >
-          {props.title}
-        </span>
+        <div class="flex items-center gap-1.5">
+          {props.indicator}
+          <span
+            class="text-[12px] font-[530]"
+            style={{ color: "var(--v2-text-text-muted)" }}
+          >
+            {props.title}
+          </span>
+        </div>
         {props.action}
       </div>
       {props.children}
@@ -870,17 +929,35 @@ function Section(props: {
   )
 }
 
-function TimingBreakdown(props: {
-  readonly session: () => SessionSummary
-  readonly waiting: () => boolean
-}) {
+function StatusDot(props: { readonly tone: "success" | "warning" }) {
+  const label = () =>
+    props.tone === "success" ? "Running" : "Waiting for input"
+
+  return (
+    <span
+      role="img"
+      aria-label={label()}
+      title={label()}
+      style={{
+        width: "6px",
+        height: "6px",
+        "border-radius": "9999px",
+        background:
+          props.tone === "success"
+            ? "var(--v2-state-fg-success)"
+            : "var(--v2-state-fg-warning)",
+        "flex-shrink": 0,
+      }}
+    />
+  )
+}
+
+function TimingBreakdown(props: { readonly session: () => SessionSummary }) {
   const current = () => {
     const session = props.session()
     return session.turns[session.turns.length - 1] ?? session.summary
   }
   const total = () => props.session().summary
-  const tone = (): "success" | "warning" =>
-    current().running && !props.waiting() ? "success" : "warning"
 
   return (
     <div
@@ -894,26 +971,10 @@ function TimingBreakdown(props: {
       }}
       title="Current run above cumulative"
     >
-      <TimingCell
-        label="Model"
-        value={formatDuration(current().modelMs)}
-        tone={tone()}
-      />
-      <TimingCell
-        label="Shell"
-        value={formatDuration(current().shellMs)}
-        tone={tone()}
-      />
-      <TimingCell
-        label="Tools"
-        value={formatDuration(current().pluginMs)}
-        tone={tone()}
-      />
-      <TimingCell
-        label="Other"
-        value={formatDuration(current().otherMs)}
-        tone={tone()}
-      />
+      <TimingCell label="Model" value={formatDuration(current().modelMs)} />
+      <TimingCell label="Shell" value={formatDuration(current().shellMs)} />
+      <TimingCell label="Tools" value={formatDuration(current().pluginMs)} />
+      <TimingCell label="Other" value={formatDuration(current().otherMs)} />
 
       <TimingCell label="Model" value={formatDuration(total().modelMs)} dim />
       <TimingCell label="Shell" value={formatDuration(total().shellMs)} dim />
@@ -988,28 +1049,20 @@ function TimingCell(props: {
   readonly label: string
   readonly value: string
   readonly dim?: boolean
-  readonly tone?: "success" | "warning"
 }) {
-  const color = () =>
-    props.tone === "success"
-      ? "var(--v2-state-fg-success)"
-      : props.tone === "warning"
-        ? "var(--v2-state-fg-warning)"
-        : undefined
-
   return (
     <span
       style={{
+        display: "inline-flex",
+        "align-items": "baseline",
+        "justify-content": "space-between",
+        "column-gap": "4px",
         "white-space": "nowrap",
         opacity: props.dim ? 0.65 : 1,
       }}
     >
-      <span style={{ color: color() ?? "var(--v2-text-text-faint)" }}>
-        {props.label}
-      </span>{" "}
-      <span style={{ color: color() ?? "var(--v2-text-text-muted)" }}>
-        {props.value}
-      </span>
+      <span style={{ color: "var(--v2-text-text-faint)" }}>{props.label}</span>
+      <span style={{ color: "var(--v2-text-text-muted)" }}>{props.value}</span>
     </span>
   )
 }
