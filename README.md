@@ -6,9 +6,10 @@ instead of a composer pill.
 ## What it shows
 
 - **Project** — project name, current branch, directory
-- **Timing** — cumulative session throughput, wait time and a nowrap
-  breakdown (model, shell, tools and other); **Details** opens the full list,
-  including waiting on you and provider retry, plus a **Show all turns** switch
+- **Timing** — cumulative session throughput and wait time, with a tightly
+  spaced current/last-run breakdown above the cumulative breakdown (model,
+  shell, tools and other); **Details** opens the full list, including waiting
+  on you and provider retry, plus a **Show all turns** switch
 - **Changes** — working-tree additions/deletions from `vcs.status`; click for
   the per-file list
 - **Subagents** — child sessions with colored initials, running/done counts,

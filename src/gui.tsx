@@ -37,6 +37,7 @@ import {
   formatRate,
   formatShortDuration,
   formatTokens,
+  type SessionSummary,
   type TurnSummary,
 } from "./turn.js"
 import { createTimingTracker, type TimingSubscribe } from "./timing.js"
@@ -621,7 +622,10 @@ function Overview(props: PanelProps) {
                         {formatShortDuration(turn.waitMs)} wait
                       </span>
                     </div>
-                    <TimingBreakdown summary={() => turn} />
+                    <TimingLineView
+                      summary={() => turn}
+                      label={`Turn ${index() + 1}`}
+                    />
                   </div>
                 )}
               </For>
@@ -716,7 +720,7 @@ function Overview(props: PanelProps) {
                     {formatShortDuration(summary().waitMs)} wait
                   </span>
                 </button>
-                <TimingBreakdown summary={summary} />
+                <TimingBreakdown session={snapshot} />
                 <div
                   class="text-[11px]"
                   style={{ color: "var(--v2-text-text-faint)" }}
@@ -866,7 +870,43 @@ function Section(props: {
   )
 }
 
-function TimingBreakdown(props: { readonly summary: () => TurnSummary }) {
+function TimingBreakdown(props: { readonly session: () => SessionSummary }) {
+  const current = () => {
+    const session = props.session()
+    return session.turns[session.turns.length - 1] ?? session.summary
+  }
+  const total = () => props.session().summary
+
+  return (
+    <div
+      class="grid text-[11px]"
+      style={{
+        "grid-template-columns": "max-content max-content max-content max-content",
+        "column-gap": "10px",
+        "row-gap": "1px",
+        "line-height": "1.2",
+        "font-variant-numeric": "tabular-nums",
+      }}
+      title="Current run above cumulative"
+    >
+      <TimingCell label="Model" value={formatDuration(current().modelMs)} />
+      <TimingCell label="Shell" value={formatDuration(current().shellMs)} />
+      <TimingCell label="Tools" value={formatDuration(current().pluginMs)} />
+      <TimingCell label="Other" value={formatDuration(current().otherMs)} />
+
+      <TimingCell label="Model" value={formatDuration(total().modelMs)} dim />
+      <TimingCell label="Shell" value={formatDuration(total().shellMs)} dim />
+      <TimingCell label="Tools" value={formatDuration(total().pluginMs)} dim />
+      <TimingCell label="Other" value={formatDuration(total().otherMs)} dim />
+    </div>
+  )
+}
+
+function TimingLineView(props: {
+  readonly summary: () => TurnSummary
+  readonly label?: string
+  readonly dim?: boolean
+}) {
   const text = () => {
     const summary = props.summary()
     return [
@@ -884,20 +924,19 @@ function TimingBreakdown(props: { readonly summary: () => TurnSummary }) {
         "white-space": "nowrap",
         overflow: "hidden",
         "text-overflow": "ellipsis",
+        "line-height": "1.2",
+        "font-variant-numeric": "tabular-nums",
+        opacity: props.dim ? 0.65 : 1,
       }}
-      title={text()}
+      title={`${props.label ? `${props.label}: ` : ""}${text()}`}
     >
-      <TimingPart label="Model" value={formatDuration(props.summary().modelMs)} />
+      <TimingCell label="Model" value={formatDuration(props.summary().modelMs)} />
       <TimingDivider />
-      <TimingPart label="Shell" value={formatDuration(props.summary().shellMs)} />
+      <TimingCell label="Shell" value={formatDuration(props.summary().shellMs)} />
       <TimingDivider />
-      <TimingPart
-        label="Tools"
-        value={formatDuration(props.summary().pluginMs)}
-        title="Plugins, MCPs and other non-shell tools"
-      />
+      <TimingCell label="Tools" value={formatDuration(props.summary().pluginMs)} />
       <TimingDivider />
-      <TimingPart label="Other" value={formatDuration(props.summary().otherMs)} />
+      <TimingCell label="Other" value={formatDuration(props.summary().otherMs)} />
     </div>
   )
 }
@@ -924,13 +963,18 @@ function TimingRowView(props: { readonly row: TimingRow }) {
   )
 }
 
-function TimingPart(props: {
+function TimingCell(props: {
   readonly label: string
   readonly value: string
-  readonly title?: string
+  readonly dim?: boolean
 }) {
   return (
-    <span style={{ "white-space": "nowrap" }} title={props.title}>
+    <span
+      style={{
+        "white-space": "nowrap",
+        opacity: props.dim ? 0.65 : 1,
+      }}
+    >
       <span style={{ color: "var(--v2-text-text-faint)" }}>{props.label}</span>{" "}
       <span style={{ color: "var(--v2-text-text-muted)" }}>{props.value}</span>
     </span>
