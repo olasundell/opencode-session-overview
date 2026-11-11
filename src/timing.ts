@@ -3,10 +3,10 @@ import {
   calibrateRatio,
   modelKey,
   ratioFor,
-  summarizeTurn,
+  summarizeSession,
   type Interval,
   type ModelRef,
-  type TurnSummary,
+  type SessionSummary,
 } from "./turn.ts"
 
 export type TimingEvent = {
@@ -47,21 +47,21 @@ type LiveStep = {
 
 export type TimingTracker = {
   attach(on: TimingSubscribe): () => void
-  summary(
+  snapshot(
     messages: readonly SessionMessageInfo[],
     now: number,
     running: boolean,
-  ): TurnSummary | undefined
+  ): SessionSummary | undefined
 }
 
 /**
- * Observe one session and summarize its current or last turn. The persisted
- * message store supplies steps, tokens and tool times; live events supply
- * streaming deltas, permission/form waits and provider retry waits.
+ * Observe one session and summarize every turn. The persisted message store
+ * supplies steps, tokens and tool times; live events supply streaming deltas,
+ * permission/form waits and provider retry waits.
  */
 export function createTimingTracker(input: {
   readonly sessionID: string
-  readonly onChange: () => void
+  readonly onChange?: () => void
   readonly charsPerToken?: number
 }): TimingTracker {
   const fallbackRatio = input.charsPerToken ?? 4
@@ -76,7 +76,7 @@ export function createTimingTracker(input: {
   const permissionOpen = new Map<string, OpenWait>()
   const formOpen = new Map<string, OpenWait>()
 
-  const changed = () => input.onChange()
+  const changed = () => input.onChange?.()
 
   const closeRetry = (at: number) => {
     if (!retryOpen) return
@@ -225,11 +225,11 @@ export function createTimingTracker(input: {
     return () => cleanups.forEach((cleanup) => cleanup())
   }
 
-  const summary = (
+  const snapshot = (
     messages: readonly SessionMessageInfo[],
     now: number,
     running: boolean,
-  ): TurnSummary | undefined => {
+  ): SessionSummary | undefined => {
     const humanOpen: Interval[] = []
     for (const open of permissionOpen.values()) {
       humanOpen.push({ start: open.start, end: now })
@@ -241,7 +241,7 @@ export function createTimingTracker(input: {
     const retryIntervals = retry.slice()
     if (retryOpen) retryIntervals.push({ start: retryOpen.start, end: now })
 
-    return summarizeTurn({
+    return summarizeSession({
       messages,
       now,
       running,
@@ -260,5 +260,5 @@ export function createTimingTracker(input: {
     })
   }
 
-  return { attach, summary }
+  return { attach, snapshot }
 }

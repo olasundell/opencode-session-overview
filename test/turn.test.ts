@@ -9,6 +9,7 @@ import {
   formatRate,
   mergeIntervals,
   overlapMs,
+  summarizeSession,
   summarizeTurn,
   unionMs,
 } from "../src/turn.ts"
@@ -163,12 +164,156 @@ test("summarizeTurn attributes generation, tools and human waits", () => {
   assert.equal(summary.tokens, 70)
   assert.equal(summary.rate, 70 / 8)
   assert.equal(summary.toolMs, 2_000)
+  assert.equal(summary.shellMs, 2_000)
+  assert.equal(summary.pluginMs, 0)
+  assert.equal(summary.shellCount, 1)
+  assert.equal(summary.pluginCount, 0)
   assert.equal(summary.humanMs, 1_000)
   assert.equal(summary.waitMs, 4_000)
   assert.equal(summary.otherMs, 1_000)
   assert.equal(summary.toolCount, 1)
   assert.equal(summary.humanCount, 1)
   assert.deepEqual(summary.tools, [{ name: "shell", count: 1, ms: 3_000 }])
+})
+
+test("summarizeTurn splits shell and plugin/MCP tool time", () => {
+  const messages = [
+    user(0),
+    assistant({
+      id: "a1",
+      created: 1_000,
+      streamed: 2_000,
+      completed: 8_000,
+      content: [
+        {
+          type: "tool",
+          id: "t1",
+          name: "shell",
+          state: { status: "completed", input: {}, content: [] },
+          time: { created: 2_000, ran: 2_000, completed: 3_000 },
+        },
+        {
+          type: "tool",
+          id: "t2",
+          name: "istra_lookup",
+          state: { status: "completed", input: {}, content: [] },
+          time: { created: 4_000, ran: 4_000, completed: 6_000 },
+        },
+        {
+          type: "tool",
+          id: "t3",
+          name: "edit",
+          state: { status: "completed", input: {}, content: [] },
+          time: { created: 6_000, ran: 6_000, completed: 7_000 },
+        },
+      ],
+    }),
+  ]
+
+  const summary = summarizeTurn({
+    messages,
+    now: 8_000,
+    running: false,
+    human: [],
+    humanOpen: [],
+    retry: [],
+  })
+
+  assert.ok(summary)
+  assert.equal(summary.toolMs, 4_000)
+  assert.equal(summary.shellMs, 1_000)
+  assert.equal(summary.pluginMs, 3_000)
+  assert.equal(summary.shellCount, 1)
+  assert.equal(summary.pluginCount, 2)
+})
+
+test("summarizeSession sums turns without inter-turn idle gaps", () => {
+  const messages = [
+    user(0),
+    assistant({
+      id: "a1",
+      created: 1_000,
+      streamed: 3_000,
+      completed: 4_000,
+      output: 30,
+      content: [
+        {
+          type: "tool",
+          id: "t1",
+          name: "shell",
+          state: { status: "completed", input: {}, content: [] },
+          time: { created: 2_000, ran: 2_000, completed: 3_000 },
+        },
+      ],
+    }),
+    user(10_000),
+    assistant({
+      id: "a2",
+      created: 11_000,
+      streamed: 15_000,
+      completed: 16_000,
+      output: 20,
+      content: [
+        {
+          type: "tool",
+          id: "t2",
+          name: "istra_lookup",
+          state: { status: "completed", input: {}, content: [] },
+          time: { created: 12_000, ran: 12_000, completed: 13_000 },
+        },
+      ],
+    }),
+  ]
+
+  const session = summarizeSession({
+    messages,
+    now: 16_000,
+    running: false,
+    human: [],
+    humanOpen: [],
+    retry: [],
+  })
+
+  assert.ok(session)
+  assert.equal(session.turns.length, 2)
+  assert.equal(session.summary.startedAt, 0)
+  assert.equal(session.summary.endedAt, 16_000)
+  assert.equal(session.summary.totalMs, 10_000)
+  assert.equal(session.summary.modelMs, 6_000)
+  assert.equal(session.summary.waitMs, 4_000)
+  assert.equal(session.summary.shellMs, 1_000)
+  assert.equal(session.summary.pluginMs, 1_000)
+  assert.equal(session.summary.toolMs, 2_000)
+  assert.equal(session.summary.tokens, 50)
+  assert.equal(session.summary.rate, 50 / 6)
+  assert.equal(session.summary.shellCount, 1)
+  assert.equal(session.summary.pluginCount, 1)
+  assert.equal(session.summary.otherMs, 2_000)
+})
+
+test("summarizeSession keeps human waits inside their own turn", () => {
+  const messages = [
+    user(0),
+    assistant({ id: "a1", created: 1_000, streamed: 2_000, completed: 2_000 }),
+    user(10_000),
+    assistant({ id: "a2", created: 11_000, streamed: 12_000, completed: 12_000 }),
+  ]
+
+  const session = summarizeSession({
+    messages,
+    now: 12_000,
+    running: false,
+    human: [{ start: 11_500, end: 11_800 }],
+    humanOpen: [],
+    retry: [],
+  })
+
+  assert.ok(session)
+  assert.equal(session.turns.length, 2)
+  assert.equal(session.turns[0]?.humanMs, 0)
+  assert.equal(session.turns[0]?.endedAt, 2_000)
+  assert.equal(session.turns[1]?.humanMs, 300)
+  assert.equal(session.summary.humanMs, 300)
 })
 
 test("summarizeTurn accepts newest-first message lists", () => {

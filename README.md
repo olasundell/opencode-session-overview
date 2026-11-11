@@ -6,8 +6,9 @@ instead of a composer pill.
 ## What it shows
 
 - **Project** — project name, current branch, directory
-- **Timing** — current or last turn's throughput and wait time; click the
-  breakdown for model request, tools, waiting on you, provider retry and other
+- **Timing** — cumulative session throughput, wait time and a nowrap
+  breakdown (model, shell, tools and other); **Details** opens the full list,
+  including waiting on you and provider retry, plus a **Show all turns** switch
 - **Changes** — working-tree additions/deletions from `vcs.status`; click for
   the per-file list
 - **Subagents** — child sessions with colored initials, running/done counts,
@@ -75,7 +76,9 @@ experiment.
 
 The timing row reuses the measurement rules from `opencode-turn-meter`:
 provider-active time is `created → streamed`, tool time is the union of tool
-intervals, and wait time is turn wall clock minus model request time.
+intervals, and wait time is turn wall clock minus model request time. Cumulative
+figures sum the individual turns, so idle gaps between turns are excluded. The
+panel recomputes it every two seconds while a turn runs.
 
 ## Development
 

@@ -67,13 +67,15 @@ test("tracker estimates the live step and only counts this session", () => {
     data: { sessionID: "ses_other", delta: "ignored" },
   })
 
-  const summary = tracker.summary(
+  const snapshot = tracker.snapshot(
     [user(0), assistant({ created: 1_000 })],
     3_000,
     true,
   )
 
-  assert.ok(summary)
+  assert.ok(snapshot)
+  assert.equal(snapshot.turns.length, 1)
+  const summary = snapshot.summary
   assert.equal(summary.startedAt, 500)
   assert.equal(summary.totalMs, 2_500)
   assert.equal(summary.tokens, 1)
@@ -98,7 +100,7 @@ test("tracker attributes permission and retry waits, then closes them", () => {
   })
   emit("session.execution.succeeded", { created: 7_000, data: { sessionID } })
 
-  const summary = tracker.summary(
+  const snapshot = tracker.snapshot(
     [
       user(0),
       assistant({ created: 1_000, streamed: 6_000, completed: 7_000 }),
@@ -107,7 +109,9 @@ test("tracker attributes permission and retry waits, then closes them", () => {
     false,
   )
 
-  assert.ok(summary)
+  assert.ok(snapshot)
+  assert.equal(snapshot.turns.length, 1)
+  const summary = snapshot.summary
   assert.equal(summary.retryMs, 1_000)
   assert.equal(summary.humanMs, 1_000)
   assert.equal(summary.modelMs, 5_000)

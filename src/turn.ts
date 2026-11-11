@@ -50,16 +50,33 @@ export type TurnSummary = {
   readonly modelMs: number
   readonly waitMs: number
   readonly toolMs: number
+  readonly shellMs: number
+  readonly pluginMs: number
   readonly humanMs: number
   readonly retryMs: number
   readonly otherMs: number
   readonly tokens: number
   readonly rate?: number
   readonly toolCount: number
+  readonly shellCount: number
+  readonly pluginCount: number
   readonly tools: readonly ToolUsage[]
   readonly humanCount: number
   readonly pendingHumanMs: number
   readonly longestToolMs: number
+}
+
+export type SessionSummary = {
+  readonly summary: TurnSummary
+  readonly turns: readonly TurnSummary[]
+}
+
+type TurnSlice = {
+  readonly messages: readonly SessionMessageInfo[]
+  readonly executionStart?: number
+  readonly running: boolean
+  readonly windowStart: number
+  readonly windowEnd: number
 }
 
 type AssistantMessage = Extract<SessionMessageInfo, { type: "assistant" }>
@@ -68,6 +85,12 @@ type ToolPart = Extract<AssistantMessage["content"][number], { type: "tool" }>
 const MIN_MODEL_MS = 250
 const MIN_CHARS_PER_TOKEN = 1.5
 const MAX_CHARS_PER_TOKEN = 16
+
+const SHELL_TOOLS = new Set(["shell", "bash", "sh", "zsh", "terminal"])
+
+function isShellTool(name: string): boolean {
+  return SHELL_TOOLS.has(name.toLowerCase())
+}
 
 function isAssistant(message: SessionMessageInfo): message is AssistantMessage {
   return message.type === "assistant"
@@ -326,8 +349,12 @@ export function summarizeTurn(input: TurnInput): TurnSummary | undefined {
   }
 
   const toolWindow: Interval[] = []
+  const shellWindow: Interval[] = []
+  const pluginWindow: Interval[] = []
   const tools: ToolUsage[] = []
   let toolCount = 0
+  let shellCount = 0
+  let pluginCount = 0
   let longestToolMs = 0
 
   for (const [name, raw] of toolIntervalsByName) {
@@ -337,6 +364,14 @@ export function summarizeTurn(input: TurnInput): TurnSummary | undefined {
     toolCount += clipped.length
     toolWindow.push(...clipped)
     tools.push({ name, count: clipped.length, ms: unionMs(clipped) })
+
+    if (isShellTool(name)) {
+      shellCount += clipped.length
+      shellWindow.push(...clipped)
+    } else {
+      pluginCount += clipped.length
+      pluginWindow.push(...clipped)
+    }
 
     for (const interval of clipped) {
       longestToolMs = Math.max(longestToolMs, interval.end - interval.start)
@@ -357,6 +392,8 @@ export function summarizeTurn(input: TurnInput): TurnSummary | undefined {
   const toolMs = unionMs(toolWindow)
   const humanOverlap = overlapMs(toolWindow, humanAll)
   const toolOnlyMs = Math.max(0, toolMs - humanOverlap)
+  const shellMs = Math.max(0, unionMs(shellWindow) - overlapMs(shellWindow, humanAll))
+  const pluginMs = Math.max(0, unionMs(pluginWindow) - overlapMs(pluginWindow, humanAll))
 
   const retryMs = unionMs(clipIntervals(input.retry, startedAt, endedAt))
   const waitMs = Math.max(0, totalMs - modelMs)
@@ -379,17 +416,177 @@ export function summarizeTurn(input: TurnInput): TurnSummary | undefined {
     modelMs,
     waitMs,
     toolMs: toolOnlyMs,
+    shellMs,
+    pluginMs,
     humanMs,
     retryMs,
     otherMs,
     tokens,
     rate,
     toolCount,
+    shellCount,
+    pluginCount,
     tools,
     humanCount,
     pendingHumanMs,
     longestToolMs,
   }
+}
+
+function splitTurns(input: TurnInput): TurnSlice[] {
+  const ordered = input.messages
+    .slice()
+    .sort((left, right) => (messageCreated(left) ?? 0) - (messageCreated(right) ?? 0))
+
+  const starts: number[] = []
+  for (let index = 0; index < ordered.length; index++) {
+    if (ordered[index].type === "user") starts.push(index)
+  }
+
+  // No prompts to split on; fall back to the old single-turn selection.
+  if (starts.length === 0) {
+    return [
+      {
+        messages: ordered,
+        executionStart: input.executionStart,
+        running: input.running,
+        windowStart: 0,
+        windowEnd: input.now,
+      },
+    ]
+  }
+
+  return starts.map((start, index) => {
+    const end = starts[index + 1] ?? ordered.length
+    const last = index === starts.length - 1
+    const windowStart = messageCreated(ordered[start]) ?? 0
+    const windowEnd = last
+      ? input.now
+      : (messageCreated(ordered[starts[index + 1] ?? ordered.length]) ?? input.now)
+
+    return {
+      messages: ordered.slice(start, end),
+      executionStart: last ? input.executionStart : undefined,
+      running: last ? input.running : false,
+      windowStart,
+      windowEnd,
+    }
+  })
+}
+
+function aggregateTurns(turns: readonly TurnSummary[], running: boolean): TurnSummary {
+  let startedAt = Number.POSITIVE_INFINITY
+  let endedAt = 0
+  let totalMs = 0
+  let modelMs = 0
+  let waitMs = 0
+  let toolMs = 0
+  let shellMs = 0
+  let pluginMs = 0
+  let humanMs = 0
+  let retryMs = 0
+  let otherMs = 0
+  let tokens = 0
+  let toolCount = 0
+  let shellCount = 0
+  let pluginCount = 0
+  let humanCount = 0
+  let pendingHumanMs = 0
+  let longestToolMs = 0
+
+  const tools = new Map<string, { count: number; ms: number }>()
+
+  for (const turn of turns) {
+    startedAt = Math.min(startedAt, turn.startedAt)
+    endedAt = Math.max(endedAt, turn.endedAt)
+    totalMs += turn.totalMs
+    modelMs += turn.modelMs
+    waitMs += turn.waitMs
+    toolMs += turn.toolMs
+    shellMs += turn.shellMs
+    pluginMs += turn.pluginMs
+    humanMs += turn.humanMs
+    retryMs += turn.retryMs
+    otherMs += turn.otherMs
+    tokens += turn.tokens
+    toolCount += turn.toolCount
+    shellCount += turn.shellCount
+    pluginCount += turn.pluginCount
+    humanCount += turn.humanCount
+    pendingHumanMs = Math.max(pendingHumanMs, turn.pendingHumanMs)
+    longestToolMs = Math.max(longestToolMs, turn.longestToolMs)
+
+    for (const tool of turn.tools) {
+      const current = tools.get(tool.name)
+      if (current) {
+        current.count += tool.count
+        current.ms += tool.ms
+      } else {
+        tools.set(tool.name, { count: tool.count, ms: tool.ms })
+      }
+    }
+  }
+
+  const rate =
+    tokens > 0 && modelMs >= MIN_MODEL_MS ? tokens / (modelMs / 1000) : undefined
+
+  const aggregated: ToolUsage[] = [...tools.entries()]
+    .map(([name, usage]) => ({ name, count: usage.count, ms: usage.ms }))
+    .sort((left, right) => right.ms - left.ms || left.name.localeCompare(right.name))
+
+  return {
+    running,
+    startedAt: Number.isFinite(startedAt) ? startedAt : 0,
+    endedAt,
+    totalMs,
+    modelMs,
+    waitMs,
+    toolMs,
+    shellMs,
+    pluginMs,
+    humanMs,
+    retryMs,
+    otherMs,
+    tokens,
+    rate,
+    toolCount,
+    shellCount,
+    pluginCount,
+    tools: aggregated,
+    humanCount,
+    pendingHumanMs,
+    longestToolMs,
+  }
+}
+
+/**
+ * Summarize every turn in the session. Inter-turn idle gaps are excluded: the
+ * cumulative figures are sums of the individual turn summaries.
+ */
+export function summarizeSession(input: TurnInput): SessionSummary | undefined {
+  const turns: TurnSummary[] = []
+
+  for (const slice of splitTurns(input)) {
+    const inWindow = (interval: Interval) =>
+      interval.end > slice.windowStart && interval.start < slice.windowEnd
+
+    const summary = summarizeTurn({
+      messages: slice.messages,
+      now: input.now,
+      running: slice.running,
+      executionStart: slice.executionStart,
+      human: input.human.filter(inWindow),
+      humanOpen: slice.running ? input.humanOpen : [],
+      retry: input.retry.filter(inWindow),
+      live: slice.running ? input.live : undefined,
+    })
+
+    if (summary) turns.push(summary)
+  }
+
+  if (turns.length === 0) return undefined
+
+  return { summary: aggregateTurns(turns, input.running), turns }
 }
 
 /**

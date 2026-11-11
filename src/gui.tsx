@@ -22,6 +22,7 @@ import {
   createResource,
   createSignal,
   onCleanup,
+  untrack,
 } from "solid-js"
 import type { JSX } from "solid-js"
 import {
@@ -182,13 +183,12 @@ function AutoOpen(props: {
 }
 
 /**
- * Track the current or last turn for this panel's session. Persisted messages
- * supply steps, tokens and tool times; live events supply streaming deltas,
- * permission/form waits and retry waits.
+ * Track every turn for this panel's session. Persisted messages supply steps,
+ * tokens and tool times; live events supply streaming deltas, permission/form
+ * waits and retry waits.
  */
 function useTurnTiming(session: MountedSession) {
-  const [now, setNow] = createSignal(Date.now())
-  const [revision, setRevision] = createSignal(0)
+  const [tick, setTick] = createSignal(0)
 
   let tracker: ReturnType<typeof createTimingTracker> | undefined
 
@@ -196,16 +196,13 @@ function useTurnTiming(session: MountedSession) {
     const store = session.server.data
     const sessionID = session.id
 
-    tracker = createTimingTracker({
-      sessionID,
-      onChange: () => setRevision((value) => value + 1),
-    })
+    tracker = createTimingTracker({ sessionID })
 
     const off = tracker.attach(store.on as unknown as TimingSubscribe)
-    const timer = setInterval(() => setNow(Date.now()), 500)
+    const timer = setInterval(() => setTick((value) => value + 1), 2000)
 
-    // Trigger the summary once the tracker exists, not only on the next tick.
-    setRevision((value) => value + 1)
+    // Show the summary once the tracker exists, not only after two seconds.
+    setTick((value) => value + 1)
 
     onCleanup(() => {
       off()
@@ -215,12 +212,16 @@ function useTurnTiming(session: MountedSession) {
   })
 
   return createMemo(() => {
-    revision()
-    const at = now()
-    const store = session.server.data
-    const running = store.session.status(session.id) === "running"
+    tick()
 
-    return tracker?.summary(store.session.message.list(session.id), at, running)
+    // Read the store outside the reactive graph: only the two-second tick
+    // should recompute the timing row, not every streaming event.
+    return untrack(() => {
+      const store = session.server.data
+      const running = store.session.status(session.id) === "running"
+
+      return tracker?.snapshot(store.session.message.list(session.id), Date.now(), running)
+    })
   })
 }
 
@@ -230,9 +231,14 @@ function timingRows(summary: TurnSummary): TimingRow[] {
     { id: "tokens", label: "Tokens", detail: formatTokens(summary.tokens) },
     { id: "model", label: "Model request", detail: formatDuration(summary.modelMs) },
     {
-      id: "tools",
-      label: `Tools (${summary.toolCount})`,
-      detail: formatDuration(summary.toolMs),
+      id: "shell",
+      label: `Shell (${summary.shellCount})`,
+      detail: formatDuration(summary.shellMs),
+    },
+    {
+      id: "plugins",
+      label: `Plugins/MCPs (${summary.pluginCount})`,
+      detail: formatDuration(summary.pluginMs),
     },
   ]
 
@@ -262,12 +268,10 @@ function timingRows(summary: TurnSummary): TimingRow[] {
     })
   }
 
-  if (summary.otherMs > 500) {
-    rows.push({ id: "other", label: "Other", detail: formatDuration(summary.otherMs) })
-  }
+  rows.push({ id: "other", label: "Other", detail: formatDuration(summary.otherMs) })
 
   rows.push({ id: "wait", label: "Total wait", detail: formatDuration(summary.waitMs) })
-  rows.push({ id: "turn", label: "Turn total", detail: formatDuration(summary.totalMs) })
+  rows.push({ id: "turn", label: "Total time", detail: formatDuration(summary.totalMs) })
 
   return rows
 }
@@ -277,17 +281,21 @@ function Overview(props: PanelProps) {
   const data = () => props.session.server.data
   const directory = () => props.session.directory
   const timing = useTurnTiming(props.session)
+  const [allTurns, setAllTurns] = createSignal(false)
 
   const waitingOnYou = createMemo(() => {
-    const summary = timing()
+    const summary = timing()?.summary
     if (summary && summary.pendingHumanMs > 0) return true
 
-    const store = data()
-    if (store.session.permission.list(props.session.id).length > 0) return true
+    return untrack(() => {
+      const store = data()
+      if (store.session.permission.list(props.session.id).length > 0) return true
 
-    return (
-      (store.session.form.list(props.session.id, props.session.location) ?? []).length > 0
-    )
+      return (
+        (store.session.form.list(props.session.id, props.session.location) ?? []).length >
+        0
+      )
+    })
   })
 
   const projectName = createMemo(
@@ -563,15 +571,13 @@ function Overview(props: PanelProps) {
   }
 
   const openTiming = () => {
-    const summary = timing()
-    if (!summary) return
-
-    const rows = timingRows(summary)
+    const snapshot = timing()
+    if (!snapshot) return
 
     ctx.dialogs.open((dialog) => (
       <ctx.ui.Dialog
         title="Timing"
-        description={summary.running ? "Current turn" : "Last turn"}
+        description={allTurns() ? "All turns" : "Session total"}
         size="normal"
         footer={
           <ctx.ui.Button variant="contrast" onClick={dialog.close}>
@@ -579,24 +585,48 @@ function Overview(props: PanelProps) {
           </ctx.ui.Button>
         }
       >
-        <div class="flex flex-col gap-1">
-          <For each={rows}>
-            {(row) => (
-              <div class="flex items-center gap-2 py-1">
-                <span class="flex-1">{row.label}</span>
-                <span
-                  style={{
-                    color:
-                      row.tone === "warning"
-                        ? "var(--v2-state-fg-warning)"
-                        : undefined,
-                  }}
-                >
-                  {row.detail}
-                </span>
+        <div class="flex flex-col gap-3">
+          <ctx.ui.Switch
+            label="Show all turns"
+            description="List every turn separately."
+            checked={allTurns()}
+            onChange={setAllTurns}
+          />
+          <Show
+            when={allTurns()}
+            fallback={
+              <div class="flex flex-col gap-1">
+                <For each={timingRows(snapshot.summary)}>
+                  {(row) => <TimingRowView row={row} />}
+                </For>
               </div>
-            )}
-          </For>
+            }
+          >
+            <div class="flex flex-col gap-2">
+              <For each={snapshot.turns}>
+                {(turn, index) => (
+                  <div
+                    class="flex flex-col gap-0.5 border-t pt-2"
+                    style={{ "border-color": "var(--v2-border-border-muted)" }}
+                  >
+                    <div class="flex items-center gap-2">
+                      <span class="flex-1 text-[12px] font-[530]">
+                        Turn {index() + 1}
+                      </span>
+                      <span class="text-[11px]">{formatRate(turn.rate)}</span>
+                      <span
+                        class="text-[11px]"
+                        style={{ color: "var(--v2-text-text-faint)" }}
+                      >
+                        {formatShortDuration(turn.waitMs)} wait
+                      </span>
+                    </div>
+                    <TimingBreakdown summary={() => turn} />
+                  </div>
+                )}
+              </For>
+            </div>
+          </Show>
         </div>
       </ctx.ui.Dialog>
     ))
@@ -649,7 +679,7 @@ function Overview(props: PanelProps) {
               style={{ color: "var(--v2-text-text-accent)" }}
               onClick={openTiming}
             >
-              Breakdown
+              Details
             </button>
           </Show>
         }
@@ -658,42 +688,45 @@ function Overview(props: PanelProps) {
           when={timing()}
           fallback={
             <span class="text-[12px]" style={{ color: "var(--v2-text-text-faint)" }}>
-              No turn yet
+              No turns yet
             </span>
           }
         >
-          {(summary) => (
-            <button
-              type="button"
-              class="flex w-full items-center gap-2 py-1 text-left"
-              onClick={openTiming}
-            >
-              <span style={{ color: "var(--v2-icon-icon-muted)" }}>
-                <ctx.ui.Icon name="waveform" size="small" />
-              </span>
-              <span class="flex-1">{formatRate(summary().rate)}</span>
-              <span
-                style={{
-                  color: waitingOnYou()
-                    ? "var(--v2-state-fg-warning)"
-                    : "var(--v2-text-text-faint)",
-                }}
-              >
-                {formatShortDuration(summary().waitMs)} wait
-              </span>
-            </button>
-          )}
-        </Show>
-        <Show when={timing()}>
-          {(summary) => (
-            <div
-              class="text-[11px]"
-              style={{ color: "var(--v2-text-text-faint)" }}
-            >
-              {summary().running ? "Running" : "Last turn"} ·{" "}
-              {formatTokens(summary().tokens)} tokens
-            </div>
-          )}
+          {(snapshot) => {
+            const summary = () => snapshot().summary
+
+            return (
+              <>
+                <button
+                  type="button"
+                  class="flex w-full items-center gap-2 py-1 text-left"
+                  onClick={openTiming}
+                >
+                  <span style={{ color: "var(--v2-icon-icon-muted)" }}>
+                    <ctx.ui.Icon name="waveform" size="small" />
+                  </span>
+                  <span class="flex-1">{formatRate(summary().rate)}</span>
+                  <span
+                    style={{
+                      color: waitingOnYou()
+                        ? "var(--v2-state-fg-warning)"
+                        : "var(--v2-text-text-faint)",
+                    }}
+                  >
+                    {formatShortDuration(summary().waitMs)} wait
+                  </span>
+                </button>
+                <TimingBreakdown summary={summary} />
+                <div
+                  class="text-[11px]"
+                  style={{ color: "var(--v2-text-text-faint)" }}
+                >
+                  {summary().running ? "Running" : "Session"} ·{" "}
+                  {formatTokens(summary().tokens)} tokens
+                </div>
+              </>
+            )
+          }}
         </Show>
       </Section>
 
@@ -830,6 +863,77 @@ function Section(props: {
       </div>
       {props.children}
     </section>
+  )
+}
+
+function TimingBreakdown(props: { readonly summary: () => TurnSummary }) {
+  const text = () => {
+    const summary = props.summary()
+    return [
+      `Model ${formatDuration(summary.modelMs)}`,
+      `Shell ${formatDuration(summary.shellMs)}`,
+      `Tools ${formatDuration(summary.pluginMs)}`,
+      `Other ${formatDuration(summary.otherMs)}`,
+    ].join(" · ")
+  }
+
+  return (
+    <div
+      class="text-[11px]"
+      style={{
+        "white-space": "nowrap",
+        overflow: "hidden",
+        "text-overflow": "ellipsis",
+      }}
+      title={text()}
+    >
+      <TimingPart label="Model" value={formatDuration(props.summary().modelMs)} />
+      <TimingDivider />
+      <TimingPart label="Shell" value={formatDuration(props.summary().shellMs)} />
+      <TimingDivider />
+      <TimingPart
+        label="Tools"
+        value={formatDuration(props.summary().pluginMs)}
+        title="Plugins, MCPs and other non-shell tools"
+      />
+      <TimingDivider />
+      <TimingPart label="Other" value={formatDuration(props.summary().otherMs)} />
+    </div>
+  )
+}
+
+function TimingDivider() {
+  return <span style={{ color: "var(--v2-text-text-faint)" }}> · </span>
+}
+
+function TimingRowView(props: { readonly row: TimingRow }) {
+  return (
+    <div class="flex items-center gap-2 py-1">
+      <span class="flex-1">{props.row.label}</span>
+      <span
+        style={{
+          color:
+            props.row.tone === "warning"
+              ? "var(--v2-state-fg-warning)"
+              : undefined,
+        }}
+      >
+        {props.row.detail}
+      </span>
+    </div>
+  )
+}
+
+function TimingPart(props: {
+  readonly label: string
+  readonly value: string
+  readonly title?: string
+}) {
+  return (
+    <span style={{ "white-space": "nowrap" }} title={props.title}>
+      <span style={{ color: "var(--v2-text-text-faint)" }}>{props.label}</span>{" "}
+      <span style={{ color: "var(--v2-text-text-muted)" }}>{props.value}</span>
+    </span>
   )
 }
 
