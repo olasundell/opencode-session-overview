@@ -25,6 +25,7 @@ import {
   untrack,
 } from "solid-js"
 import type { JSX } from "solid-js"
+import { summarizeContext } from "./context.js"
 import {
   avatarColor,
   basename,
@@ -303,6 +304,35 @@ function Overview(props: PanelProps) {
     timing()?.summary.running && !waitingOnYou() ? "success" : "warning",
   )
 
+  const context = createMemo(() => {
+    // Recompute on the same two-second cadence as the timing row.
+    timing()
+
+    return untrack(() => {
+      const store = data()
+      const messages = store.session.message.list(props.session.id)
+      const info = store.session.get(props.session.id)
+      const ref =
+        info?.model ??
+        messages.findLast((message) => message.type === "assistant")?.model
+      const model = ref
+        ? (store.location.model.list(props.session.location) ?? []).findLast(
+            (item) =>
+              item.providerID === ref.providerID &&
+              item.id === ref.id &&
+              item.status !== "deprecated",
+          )
+        : undefined
+
+      return summarizeContext({
+        messages,
+        limit: model?.limit.context,
+        sessionCost: info?.cost ?? 0,
+        revertMessageID: info?.revert?.messageID,
+      })
+    })
+  })
+
   const projectName = createMemo(
     () =>
       props.session.listedProject?.name ??
@@ -348,6 +378,7 @@ function Overview(props: PanelProps) {
       store.location.websearch.refresh(location),
       store.location.reference.sync(location),
       store.location.integration.sync(location),
+      store.location.model.sync(location),
     ])
   }
 
@@ -789,6 +820,174 @@ function Overview(props: PanelProps) {
         </Show>
       </Section>
 
+      <Section
+        title="Context"
+        action={
+          <Show when={context()}>
+            {(snapshot) => (
+              <span
+                class="text-[11px]"
+                style={{ color: "var(--v2-text-text-faint)" }}
+              >
+                {snapshot().limit
+                  ? `${formatTokens(snapshot().total)} / ${formatTokens(snapshot().limit!)}`
+                  : formatTokens(snapshot().total)}
+              </span>
+            )}
+          </Show>
+        }
+      >
+        <Show
+          when={context()}
+          fallback={
+            <span class="text-[12px]" style={{ color: "var(--v2-text-text-faint)" }}>
+              No usage yet
+            </span>
+          }
+        >
+          {(snapshot) => {
+            const denominator = () => {
+              const item = snapshot()
+              return Math.max(item.limit ?? item.total, item.total, 1)
+            }
+            const width = (value: number) =>
+              `${Math.max(0, Math.min(100, (value / denominator()) * 100))}%`
+            const segments = () => {
+              const composition = snapshot().composition
+              const result = [
+                {
+                  id: "system",
+                  label: "System",
+                  value: composition.system,
+                  color: "var(--v2-text-text-faint)",
+                },
+                {
+                  id: "tools",
+                  label: "Tools/overhead",
+                  value: composition.overhead,
+                  color: "var(--v2-state-fg-warning)",
+                },
+                {
+                  id: "chat",
+                  label: "Chat",
+                  value: composition.conversation,
+                  color: "var(--v2-state-fg-success)",
+                },
+                {
+                  id: "results",
+                  label: "Results",
+                  value: composition.results,
+                  color: "var(--v2-text-text-accent)",
+                },
+              ]
+
+              if (composition.summary > 0) {
+                result.push({
+                  id: "summary",
+                  label: "Summary",
+                  value: composition.summary,
+                  color: "var(--v2-text-text-muted)",
+                })
+              }
+
+              return result
+            }
+            const jump = () => {
+              const item = snapshot()
+              if (item.turnGrowth === undefined) return
+
+              const parts = [
+                `${item.turnGrowth >= 0 ? "+" : "-"}${formatTokens(Math.abs(item.turnGrowth))} this turn`,
+              ]
+              if (item.turnResultTokens > 0) {
+                parts.push(`${formatTokens(item.turnResultTokens)} results`)
+              }
+              if (item.turnCost > 0) parts.push(formatCost(item.turnCost))
+              return parts.join(" · ")
+            }
+            const consumerText = (consumer: {
+              readonly label: string
+              readonly detail?: string
+            }) =>
+              consumer.detail
+                ? `${consumer.label} · ${consumer.detail}`
+                : consumer.label
+            const top = () => snapshot().consumers.slice(0, 3)
+            const topTitle = () =>
+              snapshot()
+                .consumers.map(
+                  (consumer) =>
+                    `${consumerText(consumer)} ${formatTokens(consumer.tokens)}`,
+                )
+                .join(" · ")
+
+            return (
+              <div class="flex flex-col gap-1.5">
+                <div
+                  class="flex h-[6px] w-full overflow-hidden rounded-full"
+                  style={{ background: "var(--v2-background-bg-layer-04)" }}
+                >
+                  <For each={segments()}>
+                    {(segment) => (
+                      <div
+                        style={{
+                          width: width(segment.value),
+                          height: "100%",
+                          background: segment.color,
+                          "flex-shrink": 0,
+                        }}
+                      />
+                    )}
+                  </For>
+                </div>
+                <div class="grid grid-cols-2 gap-x-3 gap-y-0.5 text-[11px]">
+                  <For each={segments()}>
+                    {(segment) => (
+                      <ContextLegend
+                        label={segment.label}
+                        value={segment.value}
+                        color={segment.color}
+                      />
+                    )}
+                  </For>
+                </div>
+                <Show when={jump()}>
+                  <div
+                    class="truncate text-[11px]"
+                    style={{ color: "var(--v2-text-text-faint)" }}
+                    title={jump()}
+                  >
+                    {jump()}
+                  </div>
+                </Show>
+                <Show when={snapshot().consumers.length > 0}>
+                  <div
+                    class="truncate text-[11px]"
+                    style={{ color: "var(--v2-text-text-faint)" }}
+                    title={topTitle()}
+                  >
+                    <span>Top</span>{" "}
+                    <For each={top()}>
+                      {(consumer, index) => (
+                        <>
+                          <Show when={index() > 0}> · </Show>
+                          <span style={{ color: "var(--v2-text-text-muted)" }}>
+                            {consumerText(consumer)}
+                          </span>{" "}
+                          <span style={{ color: "var(--v2-text-text-muted)" }}>
+                            {formatTokens(consumer.tokens)}
+                          </span>
+                        </>
+                      )}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+            )
+          }}
+        </Show>
+      </Section>
+
       <Section title="Changes">
         <button
           type="button"
@@ -1045,6 +1244,33 @@ function TimingRowView(props: { readonly row: TimingRow }) {
   )
 }
 
+function ContextLegend(props: {
+  readonly label: string
+  readonly value: number
+  readonly color: string
+}) {
+  return (
+    <span
+      class="flex min-w-0 items-center gap-1.5"
+      style={{ color: "var(--v2-text-text-faint)" }}
+    >
+      <span
+        style={{
+          width: "6px",
+          height: "6px",
+          "border-radius": "9999px",
+          background: props.color,
+          "flex-shrink": 0,
+        }}
+      />
+      <span class="truncate">{props.label}</span>
+      <span class="ml-auto" style={{ color: "var(--v2-text-text-muted)" }}>
+        {formatTokens(props.value)}
+      </span>
+    </span>
+  )
+}
+
 function TimingCell(props: {
   readonly label: string
   readonly value: string
@@ -1102,6 +1328,11 @@ function Avatar(props: { readonly session: SessionInfo }) {
       {initials(props.session.agent ?? props.session.title ?? props.session.id)}
     </span>
   )
+}
+
+function formatCost(value: number): string {
+  if (!Number.isFinite(value) || value <= 0) return "$0.00"
+  return value < 0.01 ? `$${value.toFixed(3)}` : `$${value.toFixed(2)}`
 }
 
 function sourceColor(tone: SourceTone | undefined): string {

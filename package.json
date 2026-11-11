@@ -18,6 +18,7 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "build": "vite build",
+    "dev": "vite build --watch",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "check": "pnpm run typecheck && pnpm run test && pnpm run build"
   },

@@ -13,6 +13,9 @@ instead of a composer pill.
   shell, tools and other). A status dot next to Timing is green while running
   and orange while waiting for input; **Details** opens the full list,
   including waiting on you and provider retry, plus a **Show all turns** switch
+- **Context** — context-window composition (system, tools/overhead, chat,
+  results, summary) with a stacked bar, the largest consumers and this turn's
+  context growth
 - **Changes** — working-tree additions/deletions from `vcs.status`; click for
   the per-file list
 - **Subagents** — child sessions with colored initials, running/done counts,
