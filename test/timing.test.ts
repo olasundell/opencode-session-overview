@@ -1,22 +1,28 @@
 import assert from "node:assert/strict"
 import test from "node:test"
 import type { SessionMessageInfo } from "@opencode/client"
-import { createTimingTracker, type TimingEvent } from "../src/timing.ts"
+import { createTimingRegistry, type TimingEvent } from "../src/timing.ts"
 
 const sessionID = "ses_current"
 
-function user(created: number): SessionMessageInfo {
-  return { id: "u1", type: "user", time: { created }, text: "hello" } as unknown as SessionMessageInfo
+function user(id: string, created: number): SessionMessageInfo {
+  return {
+    id,
+    type: "user",
+    time: { created },
+    text: "hello",
+  } as unknown as SessionMessageInfo
 }
 
 function assistant(input: {
+  id: string
   created: number
   streamed?: number
   completed?: number
   content?: unknown[]
 }): SessionMessageInfo {
   return {
-    id: "a1",
+    id: input.id,
     type: "assistant",
     time: {
       created: input.created,
@@ -32,16 +38,9 @@ function assistant(input: {
 
 function harness() {
   const handlers = new Map<string, (event: TimingEvent) => void>()
-  let changes = 0
+  const registry = createTimingRegistry()
 
-  const tracker = createTimingTracker({
-    sessionID,
-    onChange: () => {
-      changes += 1
-    },
-  })
-
-  const off = tracker.attach((type, handler) => {
+  const off = registry.attach((type, handler) => {
     handlers.set(type, handler)
     return () => handlers.delete(type)
   })
@@ -50,11 +49,11 @@ function harness() {
     handlers.get(type)?.(event)
   }
 
-  return { tracker, emit, changes: () => changes, off }
+  return { registry, emit, off }
 }
 
-test("tracker estimates the live step and only counts this session", () => {
-  const { tracker, emit } = harness()
+test("registry estimates the live step and isolates other sessions", () => {
+  const { registry, emit } = harness()
 
   emit("session.execution.started", { created: 500, data: { sessionID } })
   emit("session.step.started", {
@@ -67,8 +66,9 @@ test("tracker estimates the live step and only counts this session", () => {
     data: { sessionID: "ses_other", delta: "ignored" },
   })
 
-  const snapshot = tracker.snapshot(
-    [user(0), assistant({ created: 1_000 })],
+  const snapshot = registry.snapshot(
+    sessionID,
+    [user("u1", 0), assistant({ id: "a1", created: 1_000 })],
     3_000,
     true,
   )
@@ -83,8 +83,8 @@ test("tracker estimates the live step and only counts this session", () => {
   assert.equal(summary.waitMs, 1_500)
 })
 
-test("tracker attributes permission and retry waits, then closes them", () => {
-  const { tracker, emit } = harness()
+test("registry attributes permission and retry waits, then closes them", () => {
+  const { registry, emit } = harness()
 
   emit("session.execution.started", { created: 1_000, data: { sessionID } })
   emit("session.retry.scheduled", { created: 2_000, data: { sessionID } })
@@ -100,10 +100,11 @@ test("tracker attributes permission and retry waits, then closes them", () => {
   })
   emit("session.execution.succeeded", { created: 7_000, data: { sessionID } })
 
-  const snapshot = tracker.snapshot(
+  const snapshot = registry.snapshot(
+    sessionID,
     [
-      user(0),
-      assistant({ created: 1_000, streamed: 6_000, completed: 7_000 }),
+      user("u1", 0),
+      assistant({ id: "a1", created: 1_000, streamed: 6_000, completed: 7_000 }),
     ],
     7_000,
     false,
@@ -116,4 +117,102 @@ test("tracker attributes permission and retry waits, then closes them", () => {
   assert.equal(summary.humanMs, 1_000)
   assert.equal(summary.modelMs, 5_000)
   assert.equal(summary.toolMs, 0)
+})
+
+test("registry keeps waits isolated between sessions", () => {
+  const { registry, emit } = harness()
+  const a = "ses_a"
+  const b = "ses_b"
+
+  emit("session.execution.started", { created: 1_000, data: { sessionID: a } })
+  emit("permission.asked", { created: 2_000, data: { sessionID: a, id: "perm_a" } })
+  emit("session.execution.started", { created: 1_000, data: { sessionID: b } })
+  emit("session.retry.scheduled", { created: 2_000, data: { sessionID: b } })
+
+  const first = registry.snapshot(
+    a,
+    [user("ua", 0), assistant({ id: "aa", created: 1_000 })],
+    3_000,
+    true,
+  )
+  const second = registry.snapshot(
+    b,
+    [user("ub", 0), assistant({ id: "ab", created: 1_000 })],
+    3_000,
+    true,
+  )
+
+  assert.ok(first)
+  assert.ok(second)
+  assert.equal(first.summary.pendingHumanMs, 1_000)
+  assert.equal(first.summary.retryMs, 0)
+  assert.equal(second.summary.pendingHumanMs, 0)
+  assert.equal(second.summary.retryMs, 1_000)
+})
+
+test("registry keeps live waits across snapshots", () => {
+  const { registry, emit } = harness()
+
+  emit("session.execution.started", { created: 1_000, data: { sessionID } })
+  emit("permission.asked", { created: 2_000, data: { sessionID, id: "perm_1" } })
+
+  const open = registry.snapshot(
+    sessionID,
+    [user("u1", 0), assistant({ id: "a1", created: 1_000 })],
+    3_000,
+    true,
+  )
+
+  assert.ok(open)
+  assert.equal(open.summary.pendingHumanMs, 1_000)
+
+  emit("permission.replied", {
+    created: 4_000,
+    data: { sessionID, requestID: "perm_1" },
+  })
+
+  const closed = registry.snapshot(
+    sessionID,
+    [user("u1", 0), assistant({ id: "a1", created: 1_000 })],
+    5_000,
+    true,
+  )
+
+  assert.ok(closed)
+  assert.equal(closed.summary.pendingHumanMs, 0)
+  assert.equal(closed.summary.humanMs, 2_000)
+})
+
+test("prune drops stale wait intervals", () => {
+  const { registry, emit } = harness()
+
+  emit("session.execution.started", { created: 1_000, data: { sessionID } })
+  emit("permission.asked", { created: 2_000, data: { sessionID, id: "perm_1" } })
+  emit("permission.replied", {
+    created: 3_000,
+    data: { sessionID, requestID: "perm_1" },
+  })
+  emit("session.execution.succeeded", { created: 4_000, data: { sessionID } })
+
+  const before = registry.snapshot(
+    sessionID,
+    [user("u1", 0), assistant({ id: "a1", created: 1_000 })],
+    4_000,
+    false,
+  )
+
+  assert.ok(before)
+  assert.equal(before.summary.humanMs, 1_000)
+
+  registry.prune(4_000 + 2 * 60 * 60 * 1000 + 1)
+
+  const after = registry.snapshot(
+    sessionID,
+    [user("u1", 0), assistant({ id: "a1", created: 1_000 })],
+    4_000 + 2 * 60 * 60 * 1000 + 1,
+    false,
+  )
+
+  assert.ok(after)
+  assert.equal(after.summary.humanMs, 0)
 })

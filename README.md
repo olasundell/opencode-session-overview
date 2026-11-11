@@ -85,7 +85,11 @@ The timing row reuses the measurement rules from `opencode-turn-meter`:
 provider-active time is `created → streamed`, tool time is the union of tool
 intervals, and wait time is turn wall clock minus model request time. Cumulative
 figures sum the individual turns, so idle gaps between turns are excluded. The
-panel recomputes it every two seconds while a turn runs.
+panel reads the current state every two seconds.
+
+Live permission, form and retry waits are tracked at plugin level, so closing
+and reopening the Overview keeps them. Reloading the app still loses waits that
+only existed as live events; completed turns fall back to persisted messages.
 
 ## Development
 

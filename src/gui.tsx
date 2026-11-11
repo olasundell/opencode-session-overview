@@ -41,7 +41,12 @@ import {
   type SessionSummary,
   type TurnSummary,
 } from "./turn.js"
-import { createTimingTracker, type TimingSubscribe } from "./timing.js"
+import type { TimingSubscribe } from "./timing.js"
+import {
+  ensureTimingRegistry,
+  getTimingRegistry,
+  pruneTimingRegistries,
+} from "./timing-runtime.js"
 
 type SourceTone = "success" | "warning" | "danger"
 
@@ -76,6 +81,29 @@ export default Plugin.define({
     const options = {
       autoOpen: ctx.options.autoOpen !== false,
     }
+
+    // Tracking lives at plugin setup, not panel mount, so closing the Overview
+    // does not lose permission/form or retry waits.
+    createEffect(() => {
+      const cleanups: (() => void)[] = []
+
+      for (const serverID of ctx.servers.list()) {
+        const server = ctx.servers.get(serverID)
+        if (!server?.data) continue
+
+        const registry = ensureTimingRegistry(serverID)
+        cleanups.push(
+          registry.attach(server.data.on as unknown as TimingSubscribe),
+        )
+      }
+
+      const timer = setInterval(() => pruneTimingRegistries(Date.now()), 60_000)
+
+      onCleanup(() => {
+        for (const cleanup of cleanups) cleanup()
+        clearInterval(timer)
+      })
+    })
 
     const tab: PanelTab = {
       id: "overview",
@@ -185,33 +213,14 @@ function AutoOpen(props: {
 }
 
 /**
- * Track every turn for this panel's session. Persisted messages supply steps,
- * tokens and tool times; live events supply streaming deltas, permission/form
- * waits and retry waits.
+ * Read every turn for this panel's session from the plugin-level registry.
+ * Persisted messages supply steps, tokens and tool times; live events supply
+ * streaming deltas, permission/form waits and retry waits.
  */
 function useTurnTiming(session: MountedSession) {
   const [tick, setTick] = createSignal(0)
-
-  let tracker: ReturnType<typeof createTimingTracker> | undefined
-
-  createEffect(() => {
-    const store = session.server.data
-    const sessionID = session.id
-
-    tracker = createTimingTracker({ sessionID })
-
-    const off = tracker.attach(store.on as unknown as TimingSubscribe)
-    const timer = setInterval(() => setTick((value) => value + 1), 2000)
-
-    // Show the summary once the tracker exists, not only after two seconds.
-    setTick((value) => value + 1)
-
-    onCleanup(() => {
-      off()
-      clearInterval(timer)
-      tracker = undefined
-    })
-  })
+  const timer = setInterval(() => setTick((value) => value + 1), 2000)
+  onCleanup(() => clearInterval(timer))
 
   return createMemo(() => {
     tick()
@@ -221,8 +230,16 @@ function useTurnTiming(session: MountedSession) {
     return untrack(() => {
       const store = session.server.data
       const running = store.session.status(session.id) === "running"
+      const registry =
+        getTimingRegistry(session.server.id) ??
+        ensureTimingRegistry(session.server.id)
 
-      return tracker?.snapshot(store.session.message.list(session.id), Date.now(), running)
+      return registry.snapshot(
+        session.id,
+        store.session.message.list(session.id),
+        Date.now(),
+        running,
+      )
     })
   })
 }
