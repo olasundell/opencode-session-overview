@@ -3,6 +3,16 @@
   "version": "0.1.0",
   "private": true,
   "description": "Codex-style session overview side panel for OpenCode Desktop.",
+  "license": "MIT",
+  "author": "Ola Sundell",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/olasundell/opencode-session-overview.git"
+  },
+  "bugs": {
+    "url": "https://github.com/olasundell/opencode-session-overview/issues"
+  },
+  "homepage": "https://github.com/olasundell/opencode-session-overview#readme",
   "type": "module",
   "packageManager": "pnpm@12.18.0",
   "exports": {
@@ -13,6 +23,7 @@
   "files": [
     "src",
     "dist",
+    "docs",
     "README.md"
   ],
   "scripts": {
@@ -21,6 +32,7 @@
     "lint:fix": "oxlint --fix src test",
     "build": "vite build",
     "dev": "vite build --watch",
+    "prepack": "pnpm build",
     "test": "node --experimental-strip-types --test test/*.test.ts",
     "check": "pnpm run typecheck && pnpm run lint && pnpm run test && pnpm run build"
   },
